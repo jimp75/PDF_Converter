@@ -288,6 +288,7 @@
 
       .dropzone { cursor: pointer; }
       .dropzone.over { background: rgba(79,140,255,.14); border-color: var(--accent); }
+      [hidden] { display: none !important; }
       .btn:disabled { opacity: .5; cursor: not-allowed !important; }
       #status.error { color: #f87171; }
       #status.ok { color: var(--success); }
@@ -333,7 +334,7 @@
               </div>
               <div class="window-body">
                 <input type="file" id="file-input" hidden
-                       accept="image/*,.txt,.md,.csv,.json,.log,.html,.htm,.xml" />
+                       accept="image/*,.docx,.txt,.md,.csv,.json,.log,.html,.htm,.xml" />
                 <div class="dropzone" id="dropzone" tabindex="0" role="button"
                      aria-label="Drop a file here or browse for one">
                   Drop your file here<br />
@@ -348,7 +349,7 @@
                 </div>
                 <p id="status" role="status" aria-live="polite"
                    style="margin:14px 0 0;color:var(--muted);font-size:.9rem;min-height:1.3em;">
-                  Works with images (JPG, PNG, WebP, GIF, BMP) and text files (TXT, MD, CSV, JSON, HTML).
+                  Works with Word (DOCX, text only), images (JPG, PNG, WebP, GIF, BMP) and text files (TXT, MD, CSV, JSON, HTML).
                   Files stay in your browser.
                 </p>
                 <a id="download-link" class="btn btn-secondary" hidden
@@ -478,7 +479,9 @@
         }
 
         function pdfEscape(t) {
-          return t.replace(/[^\x20-\x7E\xA0-\xFF]/g, "?").replace(/([\\()])/g, "\\$1");
+          return t.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"')
+            .replace(/[\u2013\u2014]/g, "-").replace(/\u2026/g, "...").replace(/\u2022/g, "*")
+            .replace(/[^\x20-\x7E\xA0-\xFF]/g, "?").replace(/([\\()])/g, "\\$1");
         }
 
         function textToPages(text) {
@@ -525,6 +528,49 @@
           });
         }
 
+
+        function readDocx(file) {
+          return file.arrayBuffer().then(function (buf) {
+            var dv = new DataView(buf), u8 = new Uint8Array(buf), i, eocd = -1;
+            for (i = u8.length - 22; i >= Math.max(0, u8.length - 65557); i--) {
+              if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+            }
+            if (eocd < 0) throw new Error("That does not look like a valid .docx file.");
+            var count = dv.getUint16(eocd + 10, true), p = dv.getUint32(eocd + 16, true), hit = null;
+            for (i = 0; i < count && !hit; i++) {
+              if (dv.getUint32(p, true) !== 0x02014b50) break;
+              var nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+              var name = new TextDecoder().decode(u8.subarray(p + 46, p + 46 + nl));
+              if (name === "word/document.xml") {
+                hit = { method: dv.getUint16(p + 10, true), size: dv.getUint32(p + 20, true), off: dv.getUint32(p + 42, true) };
+              }
+              p += 46 + nl + xl + cl;
+            }
+            if (!hit) throw new Error("Could not find the text inside that .docx file.");
+            var start = hit.off + 30 + dv.getUint16(hit.off + 26, true) + dv.getUint16(hit.off + 28, true);
+            var raw = u8.subarray(start, start + hit.size);
+            if (hit.method === 0) return raw;
+            if (hit.method !== 8 || typeof DecompressionStream === "undefined") {
+              throw new Error("Your browser cannot open this .docx. Try an up-to-date Chrome, Edge, Firefox or Safari.");
+            }
+            return new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer();
+          }).then(function (xmlBuf) {
+            var doc = new DOMParser().parseFromString(new TextDecoder().decode(xmlBuf), "application/xml");
+            var out = [], paras = doc.getElementsByTagName("w:p");
+            for (var a = 0; a < paras.length; a++) {
+              var line = "", nodes = paras[a].getElementsByTagName("*");
+              for (var b = 0; b < nodes.length; b++) {
+                var n = nodes[b].nodeName;
+                if (n === "w:t") line += nodes[b].textContent;
+                else if (n === "w:tab") line += "\t";
+                else if (n === "w:br" || n === "w:cr") line += "\n";
+              }
+              out.push(line);
+            }
+            return out.join("\n");
+          });
+        }
+
         function readText(file) {
           return new Promise(function (resolve, reject) {
             var r = new FileReader();
@@ -544,10 +590,12 @@
             job = Promise.reject(new Error("That file is already a PDF."));
           } else if (f.type.indexOf("image/") === 0) {
             job = imageToPage(f).then(function (p) { return [p]; });
+          } else if (ext === "docx") {
+            job = readDocx(f).then(textToPages);
           } else if (isText) {
             job = readText(f).then(textToPages);
           } else {
-            job = Promise.reject(new Error("Unsupported file type. Use an image or a text file."));
+            job = Promise.reject(new Error("Unsupported file type. Use a Word (.docx), image or text file."));
           }
           job.then(function (pages) {
             var blob = new Blob([buildPdf(pages)], { type: "application/pdf" });
