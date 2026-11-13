@@ -352,8 +352,14 @@
                   Works with Word (DOCX, text only), images (JPG, PNG, WebP, GIF, BMP) and text files (TXT, MD, CSV, JSON, HTML).
                   Files stay in your browser.
                 </p>
-                <a id="download-link" class="btn btn-secondary" hidden
-                   style="margin-top:12px;">Download PDF</a>
+                <div id="result-info" hidden
+                     style="margin-top:14px;padding:12px 14px;border:1px solid rgba(94,231,161,.35);border-radius:10px;background:rgba(94,231,161,.08);font-size:.9rem;line-height:1.6;">
+                  <strong id="info-name" style="display:block;color:var(--text);word-break:break-all;"></strong>
+                  <span id="info-details" style="color:var(--muted);"></span>
+                </div>
+                <a id="download-link" class="btn btn-secondary" hidden role="button" href="#"
+                   style="margin-top:12px;">Save PDF&hellip;</a>
+                <p id="save-hint" hidden style="margin:8px 0 0;color:var(--muted);font-size:.8rem;"></p>
               </div>
             </div>
           </div>
@@ -402,6 +408,12 @@
         var convertBtn = document.getElementById("convert-btn");
         var statusEl = document.getElementById("status");
         var dl = document.getElementById("download-link");
+        var info = document.getElementById("result-info");
+        var infoName = document.getElementById("info-name");
+        var infoDetails = document.getElementById("info-details");
+        var hint = document.getElementById("save-hint");
+        var canPick = typeof window.showSaveFilePicker === "function";
+        var currentBlob = null, currentName = "document.pdf", currentPages = 0;
         var current = null;
         var lastUrl = null;
 
@@ -409,7 +421,7 @@
 
         function pick(file) {
           current = file;
-          dl.hidden = true;
+          dl.hidden = true; info.hidden = true; hint.hidden = true;
           if (lastUrl) { URL.revokeObjectURL(lastUrl); lastUrl = null; }
           if (!file) { nameEl.textContent = "No file selected"; convertBtn.disabled = true; return; }
           nameEl.textContent = file.name;
@@ -580,6 +592,29 @@
           });
         }
 
+
+        function fmtSize(n) {
+          return n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(2) + " MB";
+        }
+
+        dl.addEventListener("click", function (e) {
+          if (!canPick || !currentBlob) return; // fall back to the normal download link
+          e.preventDefault();
+          window.showSaveFilePicker({
+            suggestedName: currentName,
+            types: [{ description: "PDF document", accept: { "application/pdf": [".pdf"] } }]
+          }).then(function (handle) {
+            return handle.createWritable().then(function (w) {
+              return w.write(currentBlob).then(function () { return w.close(); });
+            }).then(function () {
+              say("Saved as " + handle.name + " (" + fmtSize(currentBlob.size) + ").", "ok");
+            });
+          }).catch(function (err) {
+            if (err && err.name === "AbortError") return; // user cancelled the dialog
+            say("Could not save: " + (err && err.message ? err.message : err), "error");
+          });
+        });
+
         convertBtn.addEventListener("click", function () {
           if (!current) return;
           var f = current, ext = (f.name.split(".").pop() || "").toLowerCase();
@@ -601,10 +636,20 @@
             var blob = new Blob([buildPdf(pages)], { type: "application/pdf" });
             if (lastUrl) URL.revokeObjectURL(lastUrl);
             lastUrl = URL.createObjectURL(blob);
+            currentBlob = blob;
+            currentPages = pages.length;
+            currentName = f.name.replace(/\.[^.]+$/, "") + ".pdf";
             dl.href = lastUrl;
-            dl.download = f.name.replace(/\.[^.]+$/, "") + ".pdf";
+            dl.download = currentName;
+            infoName.textContent = currentName;
+            infoDetails.textContent = "Converted from " + f.name + " \u00b7 " + currentPages +
+              (currentPages === 1 ? " page" : " pages") + " \u00b7 " + fmtSize(blob.size);
+            info.hidden = false;
             dl.hidden = false;
-            say("Done — your PDF is ready.", "ok");
+            hint.textContent = canPick ? "You will be asked where to save the file." :
+              "Your browser saves to its default Downloads folder. To pick a folder, turn on \u201cAsk where to save each file\u201d in its settings.";
+            hint.hidden = false;
+            say("Done \u2014 your PDF is ready.", "ok");
           }).catch(function (err) {
             say(err.message, "error");
           }).then(function () { convertBtn.disabled = false; });
